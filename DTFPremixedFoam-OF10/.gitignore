@@ -1,0 +1,6 @@
+# OpenFOAM build artifacts
+src/*/Make/linux64*/
+src/*/Make/linux64*/
+
+# Auto-generated include directories
+src/*/lnInclude/

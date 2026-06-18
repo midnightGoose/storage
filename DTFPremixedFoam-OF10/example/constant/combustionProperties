@@ -1,0 +1,46 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+  =========                 |
+  \\      /  F ield         | OpenFOAM: The Open Source CFD Toolbox
+   \\    /   O peration     | Website:  https://openfoam.org
+    \\  /    A nd           | Version:  10
+     \\/     M anipulation  |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    format      ascii;
+    class       dictionary;
+    location    "constant";
+    object      combustionProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+
+combustionModel  DTF;
+
+DTFCoeffs
+{
+    Fmax        15;         // maximum thickening factor
+    N           8;          // target cells across the flame front
+
+    // Compute with Cantera for your fuel, phi, pressure, and unburnt temperature
+    SL          0.2434;     // laminar flame speed [m/s]
+    deltaL      5.530e-4;   // laminar flame thickness (thermal diffusivity / SL) [m]
+
+    efficiencyFunction  durandPolifke;
+
+    durandPolifkeCoeffs
+    {
+        alpha   0.5;    // wrinkling constant (~0.3-0.6 for Re_t 100-10000)
+    }
+
+    flameSensor  tanh;
+
+    tanhCoeffs
+    {
+        beta        10;     // sensor sharpness
+        n_filters   10;     // box-filter passes applied to Qdot
+    }
+}
+
+
+// ************************************************************************* //

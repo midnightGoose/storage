@@ -1,0 +1,363 @@
+% =====================================================================
+%  NSCBC Subsonic Outlet Boundary Conditions -- User & Theory Manual
+%  Master source. Version-specific lines are switched with \ifvtwo.
+%    OpenFOAM 10  :  \vtwofalse   (default)
+%    OpenFOAM v2412:  \vtwotrue
+% =====================================================================
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[colorlinks=true,linkcolor=blue,urlcolor=blue,citecolor=blue]{hyperref}
+
+\setlength{\parskip}{6pt}
+\setlength{\parindent}{0pt}
+\renewcommand{\arraystretch}{1.25}
+
+\newcommand{\dt}[1]{\frac{\partial #1}{\partial t}}
+\newcommand{\dn}[1]{\frac{\partial #1}{\partial n}}
+\newcommand{\Lc}{\mathcal{L}}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single,
+        backgroundcolor=\color{gray!8},columns=fullflexible,xleftmargin=4pt}
+
+% ---- version toggle -------------------------------------------------
+\newif\ifvtwo
+\vtwotrue   % <-- OpenFOAM v2412
+% ---------------------------------------------------------------------
+\ifvtwo
+  \newcommand{\foamver}{OpenFOAM v2412 (port)}
+  \newcommand{\libsuffix}{New}
+\else
+  \newcommand{\foamver}{OpenFOAM 10}
+  \newcommand{\libsuffix}{}
+\fi
+
+\title{\textbf{NSCBC Subsonic Outlet Boundary Conditions}\\[2pt]
+       \large \foamver{} --- User and Theory Manual}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\thispagestyle{empty}
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{Overview}
+% =====================================================================
+This library provides a partially reflecting (weakly non-reflecting) subsonic
+\emph{outlet} for compressible reacting flow, implemented as three coupled
+boundary conditions --- one per transported field that needs a characteristic
+treatment:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Type name & Applied to & Role \\
+\midrule
+\code{pressureOutletNSCBC}    & pressure $p$            & acoustic relaxation to $p_\infty$\\
+\code{velocityOutletNSCBC}    & velocity $\mathbf{U}$   & acoustic + outgoing convection\\
+\code{temperatureOutletNSCBC} & temperature $T$         & entropy + acoustic transport\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Species mass fractions $Y_k$ at the outlet use OpenFOAM's built-in
+\code{advective} condition (Section~\ref{sec:species}). The three conditions
+share the same parameters (\code{pInf}, \code{etaAc}, \code{lInf},
+\code{fieldInf}) and must be applied together on the same patch.
+
+\paragraph{Scope.} The implementation is the subsonic-outlet case of the NSCBC
+framework of Poinsot \& Lele~\cite{PL92} with the Rudy--Strikwerda~\cite{RS80}
+pressure relaxation, evaluated with the variable-property thermodynamics of
+Baum, Poinsot \& Th\'{e}venin~\cite{BPT94} under a \textbf{frozen-composition}
+assumption ($\partial Y_k/\partial n\approx0$). Composition derivatives in the
+wave amplitudes (the full Baum et al.\ multicomponent extension) are \emph{not}
+included. Within that scope the formulation has been verified term-by-term
+against both papers; this manual documents that mapping.
+
+% =====================================================================
+\section{Theory}
+% =====================================================================
+
+\subsection{Characteristic waves (Poinsot \& Lele)}
+On a boundary with outward normal $n$ and normal velocity $u\equiv u_n$, the
+LODI (Local One-Dimensional Inviscid) analysis gives five characteristic waves
+with speeds
+\[
+  \lambda_1=u-c,\qquad \lambda_{2,3,4}=u,\qquad \lambda_5=u+c,
+  \qquad c^2=\gamma p/\rho \quad(\text{P\&L Eq.~18}).
+\]
+Their amplitude variations are (P\&L Eqs.~19--23):
+\begin{align}
+  \Lc_1 &= (u-c)\!\left(\dn{p}-\rho c\,\dn{u}\right), &&\text{incoming acoustic}\label{eq:L1}\\
+  \Lc_2 &= u\!\left(c^2\dn{\rho}-\dn{p}\right),       &&\text{entropy}\label{eq:L2}\\
+  \Lc_5 &= (u+c)\!\left(\dn{p}+\rho c\,\dn{u}\right), &&\text{outgoing acoustic}\label{eq:L5}
+\end{align}
+with $\Lc_3,\Lc_4=u\,\partial u_{t_{1,2}}/\partial n$ the tangential-velocity
+waves (P\&L Eqs.~21--22). All have units Pa/s.
+
+\paragraph{Wave-numbering convention.} This library uses the \emph{Poinsot \&
+Lele} ordering, in which $\Lc_2$ is the \emph{entropy} wave and
+$\Lc_3,\Lc_4$ are transverse. Baum et al.~\cite{BPT94} number the equal-speed
+waves differently ($\Lc_2,\Lc_3$ transverse, $\Lc_4$ entropy, then $N_s$
+species waves). The code and this manual follow P\&L throughout.
+
+\subsection{LODI relations and gradient relations}
+At a subsonic outlet $0<u<c$, so $\lambda_1<0$ (incoming) and
+$\lambda_{2..5}>0$ (outgoing). The outgoing amplitudes $\Lc_2,\Lc_5$ are
+computed from one-sided \emph{interior} gradients; the incoming $\Lc_1$ must be
+supplied (Section~\ref{sec:relax}). The boundary fields are then advanced with
+the primitive LODI relations (P\&L Eqs.~25, 26, 29):
+\begin{align}
+  \dt{p}+\tfrac12(\Lc_1+\Lc_5)&=0, \label{eq:lodip}\\
+  \dt{u}+\tfrac{1}{2\rho c}(\Lc_5-\Lc_1)&=0, \label{eq:lodiu}\\
+  \dt{T}+\frac{T}{\rho c^2}\!\left[-\Lc_2+\tfrac{\gamma-1}{2}(\Lc_5+\Lc_1)\right]&=0,
+  \label{eq:lodiT}
+\end{align}
+with transverse $\partial u_{t}/\partial t+\Lc_{3,4}=0$ (Eqs.~27--28). The
+associated boundary-normal gradient relations (P\&L Eqs.~34--36) are used to
+build the Neumann part of each condition:
+\begin{equation}
+  \dn{p}=\tfrac12\!\left(\tfrac{\Lc_5}{u+c}+\tfrac{\Lc_1}{u-c}\right),\quad
+  \dn{u}=\tfrac{1}{2\rho c}\!\left(\tfrac{\Lc_5}{u+c}-\tfrac{\Lc_1}{u-c}\right),\quad
+  \dn{T}=\frac{T}{\rho c^2}\!\left[-\tfrac{\Lc_2}{u}+\tfrac{\gamma-1}{2}\!\left(\tfrac{\Lc_5}{u+c}+\tfrac{\Lc_1}{u-c}\right)\right].
+  \label{eq:grad}
+\end{equation}
+
+\subsection{Pressure relaxation}\label{sec:relax}
+$\Lc_1$ enters from outside and cannot come from interior data. Setting
+$\Lc_1=0$ (perfectly non-reflecting) leaves the mean pressure unconstrained and
+ill-posed; following Rudy \& Strikwerda~\cite{RS80} it is relaxed weakly toward
+a far-field pressure $p_\infty$ (P\&L Eq.~40, identical to Baum et al.\ Eq.~26):
+\begin{equation}
+  \Lc_1=K\,(p-p_\infty),\qquad K=\sigma\,(1-\mathrm{Ma}^2)\,\frac{c}{L},
+  \label{eq:relaxK}
+\end{equation}
+($\sigma=\code{etaAc}$, $L=\code{lInf}$). Small $K$ approaches the
+non-reflecting limit; large $K$ approaches a fixed-pressure outlet. A residual
+reflection coefficient is therefore unavoidable --- the deliberate trade-off
+between non-reflectivity and well-posedness.
+
+\paragraph{Note (local vs.\ maximum Mach number).} Poinsot \& Lele write
+Eq.~\eqref{eq:relaxK} with the \emph{maximum} Mach number of the flow; this
+library uses the \emph{local} patch Mach number $\mathrm{Ma}=u/c=\code{aP/cP}$,
+the now-common form. The two coincide for low-Mach outlets.
+
+\subsection{Variable thermodynamic properties (Baum et al.)}
+The only thermodynamic coefficients appearing in
+Eqs.~\eqref{eq:lodip}--\eqref{eq:grad} are $\gamma$, $\rho$, $c$ (and
+$R$). Rather than treating them as constant (P\&L), this library realises the
+advance of Baum et al.\ by evaluating them \emph{face-by-face} from the live
+\code{fluidThermo} registry:
+\[
+  c=\sqrt{\gamma/\psi},\qquad \gamma=c^2\psi,\qquad R=\frac{1}{\psi T},
+\]
+where $\psi=\code{thermo:psi}=1/(RT)$ is the compressibility. Because $\psi$ and
+$\gamma$ track local temperature and composition, $c$, the factor
+$(1-\mathrm{Ma}^2)$ in $K$, and the LODI scaling $T/(\rho c^2)=1/(\gamma\rho R)$
+are all spatially correct even across a flame front.
+
+\subsection{Reduction of Baum et al.\ to Poinsot \& Lele}\label{sec:frozen}
+Baum et al.~\cite{BPT94} write the system in $(\rho,T,u,v,w,Y_k)$ primitive
+variables with $N_s+5$ waves; the temperature LODI is their Eq.~14,
+\[
+  \dt{T}+\Lc_1+\Lc_{N_s+5}+\textstyle\sum_{i=4}^{N_s+3}\Lc_i=0 .
+\]
+Under frozen composition $\partial Y_k/\partial n\to0$: (i) the $N_s$ species
+waves vanish; (ii) the species-gradient corrections to the acoustic and entropy
+waves vanish. Re-expressing the remaining $(\rho,T)$ waves in the $(p,u)$
+variables of P\&L through the fixed-composition ideal-gas relations
+$c^2=\gamma R T$ and $\mathrm dp=RT\,\mathrm d\rho+\rho R\,\mathrm dT$, Baum's
+Eq.~14 collapses term-by-term onto P\&L Eq.~29 \eqref{eq:lodiT}; the pressure
+and velocity equations likewise recover P\&L Eqs.~25--26. \textbf{The
+frozen-composition outlet of Baum et al.\ is thus algebraically identical to
+the outlet of Poinsot \& Lele in P\&L wave notation}; the physics of Baum et
+al.\ survives only through the variable properties of the previous subsection.
+
+% =====================================================================
+\section{Implementation: LODI as an OpenFOAM mixed (Robin) condition}
+% =====================================================================
+Each field is implemented as a \code{mixedFvPatchField}, whose face value is
+\begin{equation}
+  \varphi_f = w\,\varphi_{\mathrm{ref}}
+              + (1-w)\big[\varphi_C + \Delta\,(\partial\varphi/\partial n)_{\mathrm{ref}}\big],
+  \qquad \Delta=\tfrac{1}{\text{deltaCoeffs}},\quad
+  \varphi_f-\varphi_C=\Delta\dn{\varphi},
+  \label{eq:mixed}
+\end{equation}
+with $w=\code{valueFraction}$, $\varphi_{\mathrm{ref}}=\code{refValue}$,
+$(\partial\varphi/\partial n)_{\mathrm{ref}}=\code{refGrad}$. The three
+coefficients are chosen so that \eqref{eq:mixed} reproduces the discretised
+LODI relations. With $A\equiv K\Delta t/2$ and
+$B\equiv\tfrac{u+c}{2}\Delta t/\Delta$ (Euler / Crank--Nicolson branch):
+
+\paragraph{Pressure.}
+$w=\dfrac{1+A}{1+A+B}$,\;
+$\varphi_{\mathrm{ref}}=\dfrac{p^{\,n}+A\,p_\infty}{1+A}$,\;
+$(\partial p/\partial n)_{\mathrm{ref}}=-\rho c\,\dn{u}$. Substituting into
+\eqref{eq:mixed} and simplifying:
+\[
+  \frac{p_f-p^{\,n}}{\Delta t}+\underbrace{\tfrac{K}{2}(p-p_\infty)}_{\Lc_1/2}
+  +\underbrace{\tfrac{u+c}{2}\big(\dn{p}+\rho c\,\dn{u}\big)}_{\Lc_5/2}=0
+  \;\Rightarrow\; \dt{p}+\tfrac12(\Lc_1+\Lc_5)=0,
+\]
+i.e.\ exactly P\&L Eq.~25.
+
+\paragraph{Normal velocity.}
+$w=\dfrac{1}{1+B}$,\;
+$\varphi_{\mathrm{ref}}=u^{\,n}+\dfrac{K\Delta t}{2\rho c}(p-p_\infty)$,\;
+$(\partial u/\partial n)_{\mathrm{ref}}=-\dfrac{1}{\rho c}\dn{p}$, which gives
+\[
+  \dt{u}+\tfrac{1}{2\rho c}(\Lc_5-\Lc_1)=0 \qquad(\text{P\&L Eq.~26}).
+\]
+The minus sign in each \code{refGrad} is \emph{required}: it supplies the
+$\rho c\,\partial u/\partial n$ part of $\Lc_5$ only after combining with the
+$(\varphi_f-\varphi_C)$ term of \eqref{eq:mixed}. Read in isolation a
+\code{refGrad} resembles the $u-c$ impedance, but the assembled result is the
+correct outgoing-wave LODI.
+
+\paragraph{Temperature.}
+The patch advects at $u$ ($w=1/(1+u\Delta t/\Delta)$) and carries the acoustic
+and entropy sources through \code{refValue}/\code{refGrad}; using
+$T/(\rho c^2)=1/(\gamma\rho R)$ the assembly returns P\&L Eq.~29
+\eqref{eq:lodiT}, and \code{refGrad} is the isentropic ($\Lc_2=0$) reduction of
+Eq.~36, $\partial T/\partial n=\tfrac{\gamma-1}{\gamma}\,\partial p/\partial n/(\rho R)$.
+\ifvtwo
+In this v2412 port the entropy term $T/(\rho c^2)\Lc_2$ is carried by the
+convective operator (\code{valueFraction} at speed $u$) plus the
+pressure-gradient \code{refGrad}, rather than added explicitly to
+\code{refValue}; this avoids double-counting the entropy wave and is equivalent
+to Eq.~29.
+\fi
+
+\paragraph{Transverse velocity.} The NSCBC source terms are projected onto the
+patch-normal direction via \code{fieldInf}; tangential components reduce to
+zero-gradient extrapolation, consistent with $\partial u_t/\partial t+\Lc_{3,4}=0$
+in the limit of vanishing normal-transverse gradients.
+
+\paragraph{Time schemes.} \code{Euler} and \code{CrankNicolson} use first-order
+LODI time integration (weights above). \code{backward} uses BDF2 time levels
+($1\to\tfrac32$ in $w$ and the two-level $\varphi^{\,n},\varphi^{\,n-1}$ in
+\code{refValue}) with the same spatial operators. Other \code{ddt} schemes are
+rejected at run time.
+
+% =====================================================================
+\section{Usage}
+% =====================================================================
+Register the libraries in \code{system/controlDict}:
+\ifvtwo
+\begin{lstlisting}
+libs
+(
+    "libpressureOutletNSCBCNew.so"
+    "libvelocityOutletNSCBCNew.so"
+    "libtemperatureOutletNSCBCNew.so"
+);
+\end{lstlisting}
+\else
+\begin{lstlisting}
+libs
+(
+    "libpressureOutletNSCBC.so"
+    "libvelocityOutletNSCBC.so"
+    "libtemperatureOutletNSCBC.so"
+);
+\end{lstlisting}
+\fi
+
+Apply all three on the outlet patch (plus \code{advective} for species):
+\begin{lstlisting}
+// 0/p
+outlet { type pressureOutletNSCBC;    pInf 101325; etaAc 0.25; lInf 0.05; fieldInf 1;       value uniform 101325; }
+// 0/U
+outlet { type velocityOutletNSCBC;    pInf 101325; etaAc 0.25; lInf 0.05; fieldInf (1 0 0); value uniform (0 0 0); }
+// 0/T
+outlet { type temperatureOutletNSCBC; pInf 101325; etaAc 0.25; lInf 0.05; fieldInf 1;       value uniform 300; }
+// 0/Yi  (each species)
+outlet { type advective; phi phi; value uniform 0; }
+\end{lstlisting}
+
+\subsection{Parameters}
+\begin{center}
+\begin{tabular}{lp{8.4cm}cc}
+\toprule
+Parameter & Description & Required & Default \\
+\midrule
+\code{pInf}     & Target far-field pressure $p_\infty$ [Pa] & yes & --- \\
+\code{etaAc}    & Relaxation coefficient $\sigma$ in $K$    & yes & 0.25 \\
+\code{lInf}     & Relaxation length scale $L$ [m] (e.g.\ flame-to-outlet distance) & yes & --- \\
+\code{fieldInf} & Direction multiplier (scalar \code{1}; for $\mathbf U$, outward unit normal) & yes & --- \\
+\code{gamma}    & Override $\gamma$; if omitted, taken from \code{fluidThermo} & no & from thermo \\
+\code{phi}, \code{rho}, \code{p}, \code{U} & Field-name overrides & no & \code{phi}/\code{rho}/\code{p}/\code{U} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Species boundary condition}\label{sec:species}
+The species LODI at the outlet is pure advection,
+$\partial Y_k/\partial t+u\,\partial Y_k/\partial n=0$, which is exactly what
+OpenFOAM's \code{advective} condition solves --- use it for every $Y_k$. A
+\code{zeroGradient} condition is the $\partial Y_k/\partial n\to0$ limiting case
+and is acceptable when composition gradients at the outlet are truly negligible.
+
+\subsection{Build}
+\ifvtwo
+\begin{lstlisting}
+./Allwmake        # builds the three libpressureOutletNSCBCNew.so etc.
+\end{lstlisting}
+\else
+\begin{lstlisting}
+cd pressureOutletNSCBC    && wmake && cd ..
+cd velocityOutletNSCBC    && wmake && cd ..
+cd temperatureOutletNSCBC && wmake && cd ..
+\end{lstlisting}
+\fi
+Libraries are written to \code{\$FOAM\_USER\_LIBBIN}.
+
+\subsection{Guidance}
+\begin{itemize}\setlength\itemsep{1pt}
+  \item Place the outlet where the flow is subsonic and composition gradients
+        are small; the LODI approximation is exact only for boundary-normal
+        waves, so oblique waves leave a small residual reflection.
+  \item Increasing \code{etaAc} or decreasing \code{lInf} pulls the mean
+        pressure to $p_\infty$ more strongly but reflects more acoustic energy;
+        $\sigma\approx0.25$ (P\&L \S3.2) is a sound starting point.
+  \item Keep \code{pInf} consistent with the value/internal field used to
+        initialise $p$.
+\end{itemize}
+
+% =====================================================================
+\section{Validation (summary)}
+% =====================================================================
+The formulation was assessed in one dimension: (i) a right-running Gaussian
+\emph{acoustic} pulse and (ii) a convected Gaussian \emph{entropy} pulse, both
+leaving the outlet with strongly reduced reflection relative to a baseline
+\code{fixedValue}/\code{zeroGradient} outlet (a weak residual consistent with
+the relaxation term); and (iii) a laminar premixed flame transported through
+the outlet, which crossed the boundary with its structure preserved and the
+pressure held near $p_\infty$. The condition therefore performs within the
+limits of the LODI model on which it is based.
+
+% =====================================================================
+\begin{thebibliography}{9}
+\bibitem{PL92} T.~J.~Poinsot and S.~K.~Lele,
+  \textit{Boundary conditions for direct simulations of compressible viscous
+  flows}, J.\ Comput.\ Phys.\ \textbf{101}:104--129, 1992.
+\bibitem{BPT94} M.~Baum, T.~Poinsot, and D.~Th\'{e}venin,
+  \textit{Accurate boundary conditions for multicomponent reactive flows},
+  J.\ Comput.\ Phys.\ \textbf{116}:247--261, 1994.
+\bibitem{RS80} D.~H.~Rudy and J.~C.~Strikwerda,
+  \textit{A nonreflecting outflow boundary condition for subsonic
+  Navier--Stokes calculations}, J.\ Comput.\ Phys.\ \textbf{36}:55--70, 1980.
+\end{thebibliography}
+
+\end{document}
